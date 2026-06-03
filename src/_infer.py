@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """
-YOLO Video Inference Script
-Runs a trained Ultralytics YOLO model on a video file and saves annotated output.
+YOLO Image Inference Script
+Runs a trained Ultralytics YOLO model on an image file and saves annotated output.
 """
 
 import sys
 from pathlib import Path
+
+
+SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
 
 
 # ---------------------------------------------------------
@@ -15,11 +18,16 @@ from pathlib import Path
 
 def get_inputs():
     while True:
-        video = input("Enter input video path: ").strip()
-        video_path = Path(video).expanduser().resolve()
-        if video_path.exists():
-            break
-        print("  [ERROR] Video not found: {}. Try again.".format(video_path))
+        image = input("Enter input image path: ").strip()
+        image_path = Path(image).expanduser().resolve()
+        if not image_path.exists():
+            print("  [ERROR] Image not found: {}. Try again.".format(image_path))
+            continue
+        if image_path.suffix.lower() not in SUPPORTED_EXTS:
+            print("  [ERROR] Unsupported format '{}'. Supported: {}".format(
+                image_path.suffix, ", ".join(SUPPORTED_EXTS)))
+            continue
+        break
 
     while True:
         model = input("Enter model weights path (.pt): ").strip()
@@ -28,9 +36,8 @@ def get_inputs():
             break
         print("  [ERROR] Model not found: {}. Try again.".format(model_path))
 
-    default_output = video_path.parent / "{}_annotated.mp4".format(video_path.stem)
-    output = input("Enter output video path [{}]: ".format(default_output)).strip()
-    output_path = Path(output).expanduser().resolve() if output else default_output
+    OUTPUT_DIR = Path(r"D:\Object Detection\output")
+    output_path = OUTPUT_DIR / "{}_annotated{}".format(image_path.stem, image_path.suffix)
 
     conf_raw = input("Confidence threshold [0.25]: ").strip()
     try:
@@ -39,7 +46,7 @@ def get_inputs():
         print("  [WARN] Invalid value, defaulting to 0.25")
         conf = 0.25
 
-    return video_path, model_path, output_path, conf
+    return image_path, model_path, output_path, conf
 
 
 # ---------------------------------------------------------
@@ -63,7 +70,7 @@ def resolve_device():
 # INFERENCE
 # ---------------------------------------------------------
 
-def run_inference(video_path, model_path, output_path, conf, device):
+def run_inference(image_path, model_path, output_path, conf, device):
     try:
         import cv2
     except ImportError:
@@ -81,50 +88,31 @@ def run_inference(video_path, model_path, output_path, conf, device):
     model = YOLO(str(model_path))
     print("  [OK] Model loaded")
 
-    # Open video
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        print("  [ERROR] Could not open video: {}".format(video_path))
+    # Read image
+    frame = cv2.imread(str(image_path))
+    if frame is None:
+        print("  [ERROR] Could not read image: {}".format(image_path))
         sys.exit(1)
 
-    fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    print("  [OK] Video opened: {}x{}  {:.1f} fps  {} frames".format(width, height, fps, total))
-
-    # Output writer
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
-    if not writer.isOpened():
-        print("  [ERROR] Could not open output writer: {}".format(output_path))
-        sys.exit(1)
-
+    height, width = frame.shape[:2]
+    print("  [OK] Image loaded: {}x{}".format(width, height))
     print("  Output -> {}\n".format(output_path))
 
-    # Inference loop
-    frame_idx = 0
-    log_every = max(1, total // 20)  # log ~20 times across the video
+    # Run inference
+    results = model(frame, conf=conf, device=device, verbose=False)
+    annotated = results[0].plot()
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    # Save output
+    success = cv2.imwrite(str(output_path), annotated)
+    if not success:
+        print("  [ERROR] Could not save output image: {}".format(output_path))
+        sys.exit(1)
 
-        results = model(frame, conf=conf, device=device, verbose=False)
-        annotated = results[0].plot()
-        writer.write(annotated)
-
-        frame_idx += 1
-        if frame_idx % log_every == 0 or frame_idx == total:
-            pct = frame_idx / total * 100 if total > 0 else 0
-            print("  [{:5d}/{:5d}]  {:.1f}%".format(frame_idx, total, pct))
-
-    cap.release()
-    writer.release()
-
-    print("\n  [OK] Done! Annotated video saved to: {}".format(output_path))
+    # Print detection summary
+    boxes = results[0].boxes
+    n_detections = len(boxes) if boxes is not None else 0
+    print("  [OK] Detections found: {}".format(n_detections))
+    print("  [OK] Done! Annotated image saved to: {}".format(output_path))
 
 
 # ---------------------------------------------------------
@@ -133,14 +121,14 @@ def run_inference(video_path, model_path, output_path, conf, device):
 
 def main():
     print("\n+======================================+")
-    print("|      YOLO Video Inference Script     |")
+    print("|      YOLO Image Inference Script     |")
     print("+======================================+\n")
 
-    video_path, model_path, output_path, conf = get_inputs()
+    image_path, model_path, output_path, conf = get_inputs()
     device = resolve_device()
 
     print("\n-- Summary --------------------------------")
-    print("  Video  : {}".format(video_path))
+    print("  Image  : {}".format(image_path))
     print("  Model  : {}".format(model_path))
     print("  Output : {}".format(output_path))
     print("  Conf   : {}".format(conf))
@@ -151,7 +139,7 @@ def main():
         print("  Aborted.")
         return
 
-    run_inference(video_path, model_path, output_path, conf, device)
+    run_inference(image_path, model_path, output_path, conf, device)
 
 
 if __name__ == "__main__":
